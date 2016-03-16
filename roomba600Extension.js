@@ -208,6 +208,8 @@
 
         if (which === 'robot control allowed' &&
             (getSensor('open-interface-mode') == oiModes['safe']) ) { return true; }
+        if (which === 'robot control not allowed' &&
+            (!getSensor('open-interface-mode') == !oiModes['safe']) ) { return true; }
 
         // bumps-wheeldrops
         if (which === 'right bumper' && (getSensor('bumps-wheeldrops') & 0x01)) { return true; }
@@ -1371,6 +1373,7 @@
 
             ['b', '%m.detectSensors detected',  'booleanSensor', 'wall'],
             ['b', '%m.buttonBumper is pressed', 'booleanSensor', 'any button'],
+            ['b', 'Get boolean sensor %m.BoolSenses', 'getBooleanSensor', 'robot on dock'],
             /* Disable this for now. Wheel drops are not useful in safe mode.
              * ['b', '%m.wheelDrop is dropped',    'booleanSensor', 'any wheel'],
              */
@@ -1538,6 +1541,55 @@
             dock:           ['go to',
                              'leave'
                             ],
+            BoolSenses:     ['robot control allowed',
+                    'robot control not allowed',
+                    'right bumper',
+                    'left bumper',
+                    'bumper',
+                    'right wheel',
+                    'left wheel',
+                    'any wheel',
+                    'left cliff',
+                    'front-left cliff',
+                    'front-right cliff',
+                    'right cliff',
+                    'any cliff',
+                    'virtual wall',
+                    'side-brush stall',
+                    'main-brush stall',
+                    'right wheel stall',
+                    'left wheel stall',
+                    'stall',
+                    'clean button',
+                    'spot button',
+                    'dock button',
+                    'minute button',
+                    'hour button',
+                    'day button',
+                    'schedule button',
+                    'clock button',
+                    'any button',
+                    'charging error',
+                    'recovery charging',
+                    'full charging',
+                    'trickle charging',
+                    'not charging',
+                    'charging',
+                    'charger plugged in',
+                    'robot on dock',
+                    'charger not detected',
+                    'song playing',
+                    'wall',
+                    'wall left',
+                    'wall front',
+                    'wall right',
+                    'left light bumper activated',
+                    'front-left light bumper activated',
+                    'center-left light bumper activated',
+                    'center-right light bumper activated',
+                    'front-right light bumper activated',
+                    'right light bumper activated',
+                    'light bumper activated']
             lessMore:       [ '>', '<', '=' ],
         },
         url: 'http://www.irobot.com/About-iRobot/STEM/Create-2/Projects.aspx'

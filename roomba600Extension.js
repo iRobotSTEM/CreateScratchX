@@ -668,7 +668,7 @@
         'vacuum-on'    : 0,
         'main-brush-on': 0,
         'side-brush-cw': 0,
-        'main-brush-cw': 0,
+        'main-brush-cw': 0
     };
 
     function getMotorEnableByte(mStatusObj) {
@@ -992,7 +992,7 @@
 
     var inputArray = [];
     // Process complete packets (framing done previously)
-    function processData(data) {
+    function processPacket(data) {
         var bytes = new Uint8Array(data);
 
         // Check the checksum
@@ -1070,6 +1070,95 @@
         bytes   = null;
     }
 
+    function processInput(dataBytes) {
+        while(dataBytes.byteLength > 0) {
+            var pktStart = dataBytes.indexOf(19);
+            var curPktLength, curPktRead;
+
+            if(rawData && (pktStart !== 0)) {
+                // At least some bytes may belong to the previous packet
+                if(rawData.byteLength === 1) {
+                    // Only the 19 was picked up earlier
+                    curPktLength = dataBytes[0];
+                    curPktRead = -1; // We also need to read the length byte
+                } else {
+                    curPktLength = rawData[1];
+                    curPktRead = rawData.byteLength - 2; // data - header size
+                }
+                // Copy rest of packet
+                // Add 1 for the checksum
+                var nToRead = curPktLength - curPktRead + 1;
+
+                // Copy data from this buffer to the rawData
+                // accumulator to add on to the packet in progress
+                if(nToRead < rawData.byteLength) {
+                    rawData = appendBuffer(rawData, dataBytes.slice(0,nToRead));
+                    // Consider the rest of the string in the next iteration
+                    dataBytes = dataBytes.slice(nToRead);
+                } else {
+                    rawData = appendBuffer(rawData, dataBytes.slice(0));
+                    // We've used all the data
+                    dataBytes = "";
+                }
+
+                // Check for a complete packet
+                if(rawData.byteLength === (curPktLength + 3)) {
+                    // Process this packet
+                    processPacket(rawData);
+                }
+            }
+            else if(pktStart !== -1) {
+                // There's a packet here, and rawData is either
+                // empty or the packet begins at 0 of data, in
+                // which case whatever is currently in rawData is
+                // moot.
+
+                if(dataBytes.byteLength >= (2 + pktStart)) {
+                    // We have a length. Check for a complete packet.
+                    curPktLength = dataBytes[pktStart + 1];
+                    if((dataBytes.byteLength - pktStart) >= curPktLength + 3) {
+                        // Process this packet
+                        processPacket(dataBytes.slice(pktStart,pktStart + curPktLength + 3));
+                        // Consider the rest of the string in the next iteration
+                        dataBytes = dataBytes.slice(pktStart + curPktLength + 3);
+                    }
+                    else {
+                        // The packet isn't complete. Copy the rest and wait.
+                        if(!rawData) {
+                            rawData = new Uint8Array(dataBytes.slice(pktStart));
+                        } else {
+                            rawData = data.slice(pktStart);
+                        }
+
+                        // We've copied the entire data 
+                        dataBytes = "";
+                    }
+                }
+                else {
+                    // There's no length in the data; copy
+                    // everything and wait for the next
+                    // transmission.
+
+                    if(!rawData) {
+                        rawData = new Uint8Array(dataBytes.slice(pktStart));
+                    } else {
+                        rawData = dataBytes.slice(pktStart);
+                    }
+
+                    // We've copied the entire data 
+                    dataBytes = "";
+                }
+            }
+            else {
+                // There's no packet in this string and we weren't
+                // building a packet in rawData previously. Clear
+                // out the data and ignore it.
+                dataBytes = "";
+            }
+        }
+        dataBytes = null;
+    }
+
     function appendBuffer( buffer1, buffer2 ) {
         var tmp = new Uint8Array( buffer1.byteLength + buffer2.byteLength );
         tmp.set( new Uint8Array( buffer1 ), 0 );
@@ -1116,91 +1205,22 @@
         // Receive streamed data. This script is not set up to handle
         // non-streamed data!
         device.set_receive_handler(function(data) {
-            while(data.byteLength > 0) {
-                var dataBytes = new Uint8Array(data);
-                var pktStart = dataBytes.indexOf(19);
-                var curPktLength, curPktRead;
-
-                if(rawData && (pktStart !== 0)) {
-                    // At least some bytes may belong to the previous packet
-                    if(rawData.byteLength === 1) {
-                        // Only the 19 was picked up earlier
-                        curPktLength = dataBytes[0];
-                        curPktRead = -1; // We also need to read the length byte
-                    } else {
-                        curPktLength = rawData[1];
-                        curPktRead = rawData.byteLength - 2; // data - header size
-                    }
-                    // Copy rest of packet
-                    // Add 1 for the checksum
-                    var nToRead = curPktLength - curPktRead + 1;
-
-                    // Copy data from this buffer to the rawData
-                    // accumulator to add on to the packet in progress
-                    if(nToRead < rawData.byteLength) {
-                        rawData = appendBuffer(rawData, data.slice(0,nToRead));
-                        // Consider the rest of the string in the next iteration
-                        data = data.slice(nToRead);
-                    } else {
-                        rawData = appendBuffer(rawData, data.slice(0));
-                        // We've used all the data
-                        data = "";
-                    }
-
-                    // Check for a complete packet
-                    if(rawData.byteLength === (curPktLength + 3)) {
-                        // Process this packet
-                        processData(rawData);
-                    }
-                } else if(pktStart !== -1) {
-                    // There's a packet here, and rawData is either
-                    // empty or the packet begins at 0 of data, in
-                    // which case whatever is currently in rawData is
-                    // moot.
-
-                    if(data.byteLength >= (2 + pktStart)) {
-                        // We have a length. Check for a complete packet.
-                        curPktLength = dataBytes[pktStart + 1];
-                        if((data.byteLength - pktStart) >= curPktLength + 3) {
-                            // Process this packet
-                            processData(data.slice(pktStart,pktStart + curPktLength + 3));
-                            // Consider the rest of the string in the next iteration
-                            data = data.slice(pktStart + curPktLength + 3);
-                        } else {
-                            // The packet isn't complete. Copy the rest and wait.
-                            if(!rawData) {
-                                rawData = new Uint8Array(data.slice(pktStart));
-                            } else {
-                                rawData = data.slice(pktStart);
-                            }
-
-                            // We've copied the entire data 
-                            data = "";
-                        }
-                    } else {
-                        // There's no length in the data; copy
-                        // everything and wait for the next
-                        // transmission.
-
-                        if(!rawData) {
-                            rawData = new Uint8Array(data.slice(pktStart));
-                        } else {
-                            rawData = data.slice(pktStart);
-                        }
-
-                        // We've copied the entire data 
-                        data = "";
-                    }
-                } else {
-                    // There's no packet in this string and we weren't
-                    // building a packet in rawData previously. Clear
-                    // out the data and ignore it.
-                    data = "";
-                }
-
-                dataBytes = null;
+            if (data.byteLength > 0) {
+                var inputData = new Uint8Array(data);
+                processInput(inputData);
             }
         });
+
+        watchdog = setTimeout(function() {
+            // This device didn't get good data in time, so give up on
+            // it. Clean up and then move on. If we get good data
+            // then we'll terminate this watchdog.
+            device.set_receive_handler(null);
+            device.close();
+            device = null;
+            rawData = null;
+            tryNextDevice();
+        }, 3000); // Give Roomba 3 seconds to respond with a complete packet
 
         // Tell the Roomba to stream some sensors. Go into full mode on start
         // to avoid switching back and forth between modes and having to re-enable
@@ -1226,17 +1246,6 @@
         ]);
 
         sendToRobot(streamCmd);
-
-        watchdog = setTimeout(function() {
-            // This device didn't get good data in time, so give up on
-            // it. Clean up and then move on. If we get good data
-            // then we'll terminate this watchdog.
-            device.set_receive_handler(null);
-            device.close();
-            device = null;
-            rawData = null;
-            tryNextDevice();
-        }, 3000); // Give Roomba 3 seconds to respond with a complete packet
     };
 
     ext._deviceRemoved = function (dev) {

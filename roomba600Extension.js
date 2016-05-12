@@ -37,10 +37,26 @@
     "use strict";
 
     var device = null;
-    var rawData = null;
     var dockingq = 0;
 
     var safeModeOpcode = 131;
+
+    var streamCmd = new Uint8Array([
+        /* Request stream */
+        148,
+        /* Number of packets requested */
+        12,
+        /* List of packets */
+        7,             // Bumps and wheel-drops
+        9, 10, 11, 12, // Cliffs
+        14,            // Overcurrents (handled internally)
+        18,            // Buttons
+        34,            // Charge source available
+        35,            // OI Mode
+        43, 44,        // Encoder counts
+        45             // Light bumper
+    ]);
+    var streamDataLength = 0;
 
     var oiModes = {
         'off'     : 0,
@@ -990,173 +1006,137 @@
     }
 
 
-    var inputArray = [];
     // Process complete packets (framing done previously)
     function processPacket(data) {
         var bytes = new Uint8Array(data);
+        var inputArray = [];
 
-        // Check the checksum
-        var sum = 0;
-        for(var i=0; i<bytes.byteLength; i++) {
-            sum += bytes[i];
-            if(sum > 255) {
-                sum -= 256;
+        // Make sure this device is still in potentialDevices so that when
+        // the script is reloaded, we don't lose contact with Roomba.
+        if (device) {
+            if(potentialDevices.indexOf(device) === -1) {
+                potentialDevices.unshift(device);
             }
         }
 
-        if((sum & 0xFF) === 0) {
-            // Checksum is valid
-            
-            if(watchdog) {
-                console.log("Robot verified. Clearing watchdog");
-                clearTimeout(watchdog);
-                watchdog = null;
-                /* Set debris led on now that robot is verified.
-                   (Confusing if no LEDs on at startup) */
-                var streamCmd = new Uint8Array([
-                    139, 1, 0, 0
-                ]);
+        var index = 2;
 
-                sendToRobot(streamCmd);
-            }
+        while(index < (bytes.byteLength - 1)) {
+            var opcode = bytes[index];
 
-            // Make sure this device is still in potentialDevices so
-            // that when the script is reloaded, we don't lose contact
-            // with Roomba
-            if(device) {
-                if(potentialDevices.indexOf(device) === -1) {
-                    potentialDevices.unshift(device);
+            if(opcode < sensorLengths.length) {
+                if(sensorLengths[opcode] === 1) {
+                    inputArray[opcode] = bytes[index + 1];
                 }
-            }
-
-            var index = 2;
-
-            while(index < (bytes.byteLength - 1)) {
-                var opcode = bytes[index];
-
-                //console.log('Opcode ' + opcode);
-
-                if(opcode < sensorLengths.length) {
-                    if(sensorLengths[opcode] === 1) {
-                        inputArray[opcode] = bytes[index + 1];
-                    } else if(sensorLengths[opcode] === 2) {
-                        // Two's complement
-                        inputArray[opcode] = bytes[index + 2] + ((bytes[index + 1] & 0xFF) << 8);
-                    } else {
-                        // Unsupported opcode
-                        console.warn("Read unsupported opcode " + opcode);
-                        return;
-                    }
-
-                    // Advance to the next opcode
-                    index = index + sensorLengths[opcode] + 1;
-                } else {
-                    console.warn("Opcode is >= " + sensorLengths.length);
-                    index = index + 1;
+                else if(sensorLengths[opcode] === 2) {
+                    // Two's complement
+                    inputArray[opcode] = bytes[index + 2] + ((bytes[index + 1] & 0xFF) << 8);
                 }
-            }
-            for(var name in sensorCache) {
-                if(sensorCache.hasOwnProperty(name)) {
-                    var v = inputArray[sensorIndices[name]];          
-                    sensorCache[name] = v;
+                else {
+                    // Unsupported opcode
+                    console.warn("Read unsupported opcode " + opcode + " index: " + index);
+                    console.log(bytes);
+                    return;
                 }
-            }
 
-            safetyChecks();
+                // Advance to the next opcode
+                index = index + sensorLengths[opcode] + 1;
+            }
+            else {
+                console.warn("Opcode is >= " + sensorLengths.length + " index: " + index);
+                console.log(bytes);
+                index = index + 1;
+            }
+        }
+        for(var name in sensorCache) {
+            if(sensorCache.hasOwnProperty(name)) {
+                var v = inputArray[sensorIndices[name]];
+                sensorCache[name] = v;
+            }
         }
 
-        //console.log(sensorCache);
-        rawData = null;
+        safetyChecks();
+
+        // Once we get a known good packet, kill the watchdog.
+        // Known good = right length, checksum valid, no unsupported opcodes.
+        if (watchdog) {
+            console.log("Robot verified. Clearing watchdog");
+            clearTimeout(watchdog);
+            watchdog = null;
+            /* Set debris led on now that robot is verified.
+               (Confusing if no LEDs on at startup) */
+            var cmd = new Uint8Array([
+                139, 1, 0, 0
+            ]);
+
+            sendToRobot(cmd);
+        }
+
         bytes   = null;
     }
 
-    function processInput(dataBytes) {
-        while(dataBytes.byteLength > 0) {
-            var pktStart = dataBytes.indexOf(19);
-            var curPktLength, curPktRead;
 
-            if(rawData && (pktStart !== 0)) {
-                // At least some bytes may belong to the previous packet
-                if(rawData.byteLength === 1) {
-                    // Only the 19 was picked up earlier
-                    curPktLength = dataBytes[0];
-                    curPktRead = -1; // We also need to read the length byte
-                } else {
-                    curPktLength = rawData[1];
-                    curPktRead = rawData.byteLength - 2; // data - header size
-                }
-                // Copy rest of packet
-                // Add 1 for the checksum
-                var nToRead = curPktLength - curPktRead + 1;
+    var rawData = null;
 
-                // Copy data from this buffer to the rawData
-                // accumulator to add on to the packet in progress
-                if(nToRead < rawData.byteLength) {
-                    rawData = appendBuffer(rawData, dataBytes.slice(0,nToRead));
-                    // Consider the rest of the string in the next iteration
-                    dataBytes = dataBytes.slice(nToRead);
-                } else {
-                    rawData = appendBuffer(rawData, dataBytes.slice(0));
-                    // We've used all the data
-                    dataBytes = "";
-                }
+    function processInput(inputData) {
+        // 3 extra bytes: pkt start, num bytes, checksum
+        var streamLength = streamDataLength + 3;
+        var index = 0;
 
-                // Check for a complete packet
-                if(rawData.byteLength === (curPktLength + 3)) {
-                    // Process this packet
-                    processPacket(rawData);
-                }
-            }
-            else if(pktStart !== -1) {
-                // There's a packet here, and rawData is either
-                // empty or the packet begins at 0 of data, in
-                // which case whatever is currently in rawData is
-                // moot.
-
-                if(dataBytes.byteLength >= (2 + pktStart)) {
-                    // We have a length. Check for a complete packet.
-                    curPktLength = dataBytes[pktStart + 1];
-                    if((dataBytes.byteLength - pktStart) >= curPktLength + 3) {
-                        // Process this packet
-                        processPacket(dataBytes.slice(pktStart,pktStart + curPktLength + 3));
-                        // Consider the rest of the string in the next iteration
-                        dataBytes = dataBytes.slice(pktStart + curPktLength + 3);
+        while (index < inputData.length) {
+            // We haven't gotten the packet start yet.
+            if (!rawData) {
+                var pktStart = -1;
+                // Find the packet start
+                while ((index < inputData.length) && (pktStart < 0)) {
+                    // First byte is 19, second byte is the number of packets in stream.
+                    if (inputData[index] === 19) {
+                        pktStart = index;
                     }
-                    else {
-                        // The packet isn't complete. Copy the rest and wait.
-                        if(!rawData) {
-                            rawData = new Uint8Array(dataBytes.slice(pktStart));
-                        } else {
-                            rawData = data.slice(pktStart);
-                        }
-
-                        // We've copied the entire data 
-                        dataBytes = "";
-                    }
+                    index++;
+                }
+                if (pktStart >= 0) {
+                    rawData = new Uint8Array([inputData[pktStart]]);
                 }
                 else {
-                    // There's no length in the data; copy
-                    // everything and wait for the next
-                    // transmission.
-
-                    if(!rawData) {
-                        rawData = new Uint8Array(dataBytes.slice(pktStart));
-                    } else {
-                        rawData = dataBytes.slice(pktStart);
-                    }
-
-                    // We've copied the entire data 
-                    dataBytes = "";
+                    index = inputData.length;
+                }
+            }
+            // We got the packet start, now check the length byte.
+            else if (rawData.byteLength === 1) {
+                if (inputData[index] === streamDataLength) {
+                    var bytesLeft = streamLength - rawData.byteLength;
+                    rawData = appendBuffer(rawData, inputData.slice(index,
+                                                                    index+bytesLeft));
+                    index += bytesLeft;;
+                }
+                else { // start byte was garbage or part of the payload.
+                    rawData = null;
+                    index++;
                 }
             }
             else {
-                // There's no packet in this string and we weren't
-                // building a packet in rawData previously. Clear
-                // out the data and ignore it.
-                dataBytes = "";
+                // Append bytes to existing packet.
+                var bytesLeft = streamLength - rawData.byteLength;
+                rawData = appendBuffer(rawData, inputData.slice(index, bytesLeft+index));
+                index += bytesLeft;
+            }
+
+            if (rawData) {
+                // Check if data is long enough and pkt start is there.
+                if (rawData.byteLength >= streamLength) {
+                    var checksum = 0;
+                    // Check checksum
+                    for (var j=0; j < rawData.byteLength; j++) {
+                        checksum += rawData[j];
+                    }
+                    if ((checksum & 0xff) === 0) {
+                        processPacket(rawData);
+                    }
+                    rawData = null;
+                }
             }
         }
-        dataBytes = null;
     }
 
     function appendBuffer( buffer1, buffer2 ) {
@@ -1225,27 +1205,20 @@
         // Tell the Roomba to stream some sensors. Go into full mode on start
         // to avoid switching back and forth between modes and having to re-enable
         // components (such as LEDs)
-        var streamCmd = new Uint8Array([
+        var startCmd = new Uint8Array([
             /* Enable OI */
             128,
             /* Enter safe mode */
-            safeModeOpcode,
-            /* Request stream */
-            148,
-            /* Number of packets requested */
-            12,
-            /* List of packets */
-            7,             // Bumps and wheel-drops
-            9, 10, 11, 12, // Cliffs
-            14,            // Overcurrents (handled internally)
-            18,            // Buttons
-            34,            // Charge source available
-            35,            // OI Mode
-            43, 44,        // Encoder counts
-            45             // Light bumper
+            safeModeOpcode
         ]);
 
+        sendToRobot(startCmd);
         sendToRobot(streamCmd);
+
+        streamDataLength = 0; // checksum byte does not count
+        for (var i = 2; i < streamCmd.byteLength; i++) {
+            streamDataLength += sensorLengths[streamCmd[i]] + 1;
+        }
     };
 
     ext._deviceRemoved = function (dev) {
@@ -1263,6 +1236,7 @@
         device.close();
         device = null;
         rawData = null;
+        streamDataLength = 0;
     }
 
     ext.disconnect = function() {
